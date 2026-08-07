@@ -9,7 +9,7 @@
 // permit. (Never put the SERVICE ROLE key here.)
 
 export const CONFIG = {
-  MODE: "local", // "local" | "cloud"
-  SUPABASE_URL: "https://YOUR-PROJECT-ref.supabase.co",
-  SUPABASE_ANON_KEY: "YOUR-ANON-PUBLIC-KEY",
+  MODE: "cloud", // "local" | "cloud"
+  SUPABASE_URL: "https://lweuzfauuwqaueyctmmj.supabase.co/rest/v1/",
+  SUPABASE_ANON_KEY: "sb_publishable_mA1m1Oc6AW0ZfSWkHdxYLQ_Ph_sHhHX",
 };
