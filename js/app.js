@@ -86,6 +86,12 @@ function iAmAdminOf(l) {
   if (l.kind === "trip" && l.parentId) { const p = store.ledgerById(l.parentId); return !!(p && p.iAmAdmin); }
   return false;
 }
+// The most recent pay-to details a person provided on an expense they paid.
+function payToFor(personId, exps) {
+  const rel = (exps || []).filter((e) => !e.settlement && e.paymentInfo && computePaid(e).has(personId))
+    .sort((a, b) => (b.date || b.createdAt || 0) - (a.date || a.createdAt || 0));
+  return rel.length ? rel[0].paymentInfo : "";
+}
 // Can I edit/delete this expense? Its creator always can; so can an admin of the
 // expense's own ledger (or its parent group). Local mode is single-user → yes.
 function canEditExpense(e) {
@@ -292,13 +298,15 @@ function renderFriendDetail(friendId) {
   if (!shared.length) sl.innerHTML = `<div class="exp-meta">No shared groups or trips yet.</div>`;
   else sl.innerHTML = "";
   shared.forEach((l) => {
-    const n = netBetween(friendId, rolledExpenses(l), l.baseCurrency);
+    const lexps = rolledExpenses(l);
+    const n = netBetween(friendId, lexps, l.baseCurrency);
+    const payTo = n < 0 ? payToFor(friendId, lexps) : "";
     const row = document.createElement("div");
     row.className = "exp-row";
     row.innerHTML = `
       <div class="exp-cat">${kindIcon[l.kind]}</div>
       <div class="exp-main" style="cursor:pointer" data-open="${l.id}"><div class="exp-desc">${esc(ledgerDisplayName(l))}</div>
-        <div class="exp-meta">${kindLabel[l.kind]} · ${l.baseCurrency}</div></div>
+        <div class="exp-meta">${kindLabel[l.kind]} · ${l.baseCurrency}</div>${payTo ? `<div class="exp-meta" style="white-space:pre-wrap;color:var(--brand)">💸 Pay back to: ${esc(payTo)}</div>` : ""}</div>
       <div class="exp-amt"><div class="${n >= 0 ? "pos" : "neg"}">${n === 0 ? "settled" : (n > 0 ? "owes you " : "you owe ") + formatMoney(Math.abs(n), l.baseCurrency)}</div></div>
       ${n !== 0 ? `<button class="btn ghost sm" data-settle="${l.id}">Settle up</button>` : ""}`;
     sl.appendChild(row);
@@ -314,7 +322,9 @@ function renderFriendDetail(friendId) {
   if (rb) rb.onclick = async () => {
     const lines = shared.map((l) => ({ l, n: netBetween(friendId, rolledExpenses(l), l.baseCurrency) })).filter((x) => x.n > 0)
       .map((x) => `  • ${ledgerDisplayName(x.l)}: ${formatMoney(x.n, x.l.baseCurrency)}`);
-    const msg = `Hi ${m.name},\n\nJust a friendly reminder about what's outstanding between us on UNO Ledger:\n\n${lines.join("\n")}\n\nThanks!\n— ${store.state.you.name}`;
+    const myPay = shared.map((x) => payToFor("you", rolledExpenses(x))).find(Boolean) || "";
+    const payLine = myPay ? `\n\nYou can send it via: ${myPay}` : "";
+    const msg = `Hi ${m.name},\n\nJust a friendly reminder about what's outstanding between us on UNO Ledger:\n\n${lines.join("\n")}${payLine}\n\nThanks!\n— ${store.state.you.name}`;
     try { await navigator.clipboard.writeText(msg); toast("Reminder copied."); } catch { toast("Copy failed."); }
   };
   wireMobile();
@@ -382,6 +392,7 @@ function renderExpenses(body, l) {
       <div class="exp-main">
         <div class="exp-desc">${esc(e.description || "Expense")}</div>
         <div class="exp-meta">${esc(payers.join(", ") || "?")} paid · ${new Date(e.date || e.createdAt).toLocaleDateString()} · ${splitLabel(e)}${e._tripName ? ` · <span class="tag">🧳 ${esc(e._tripName)}</span>` : ""}${e.currency !== l.baseCurrency ? ` · <span class="tag">${e.currency}→${l.baseCurrency} @${e.fxToBase ?? 1}</span>` : ""}</div>
+        ${e.paymentInfo && yourNet < 0 ? `<div class="exp-meta" style="white-space:pre-wrap;color:var(--brand)">💸 Pay back to: ${esc(e.paymentInfo)}</div>` : ""}
       </div>
       ${receipt}
       <div class="exp-amt"><div>${formatMoney(e.amountMinor, e.currency)}</div>
@@ -418,7 +429,8 @@ function renderBalances(body, l) {
 }
 
 function renderSettle(body, l) {
-  const { base } = computeBalances(rolledExpenses(l), l.baseCurrency);
+  const exps = rolledExpenses(l);
+  const { base } = computeBalances(exps, l.baseCurrency);
   const transfers = settleUp(base);
   if (!transfers.length) { body.innerHTML = emptyState("✅", "All settled up", "Nobody owes anybody. Nice."); return; }
   body.innerHTML = `
@@ -426,9 +438,10 @@ function renderSettle(body, l) {
     <div class="card" style="padding:6px 0">
     ${transfers.map((t, i) => {
       const from = store.memberById(t.from), to = store.memberById(t.to);
-      return `<div class="settle-row">
+      const payTo = payToFor(t.to, exps);
+      return `<div class="settle-row" style="flex-wrap:wrap">
         <div class="avatar">${esc(initials(from?.name))}</div>
-        <div class="grow"><b>${esc(from?.name)}</b> pays <b>${esc(to?.name)}</b></div>
+        <div class="grow"><b>${esc(from?.name)}</b> pays <b>${esc(to?.name)}</b>${payTo ? `<div class="exp-meta" style="white-space:pre-wrap">💸 ${esc(payTo)}</div>` : ""}</div>
         <div style="font-weight:700">${formatMoney(t.amountMinor, l.baseCurrency)}</div>
         <button class="btn ghost sm" data-settle="${i}">Mark paid</button>
       </div>`;
@@ -443,9 +456,10 @@ function renderSettle(body, l) {
 
 function renderReminders(body, l) {
   const r = l.reminder || {};
+  const admin = !CLOUD || iAmAdminOf(l);
   const { base } = computeBalances(rolledExpenses(l), l.baseCurrency);
   const debtors = rolledMemberIds(l).map((id) => ({ m: store.memberById(id), net: base.get(id) || 0 })).filter((x) => x.m && x.net < 0);
-  body.innerHTML = `
+  const settingsCard = admin ? `
     <div class="card">
       <label style="margin-top:0">Automatic email reminders</label>
       <div class="row" style="align-items:center">
@@ -457,7 +471,10 @@ function renderReminders(body, l) {
       <textarea id="remMsg" rows="2" placeholder="Hey! Here's what's outstanding from our trip 🙂">${esc(r.message || "")}</textarea>
       <div class="hint">When enabled, everyone who owes gets an automatic email on this schedule. You can also copy the previews below to send a reminder by hand any time.</div>
       <div style="margin-top:12px"><button class="btn" id="remSave">Save reminder settings</button></div>
-    </div>
+    </div>`
+    : `<div class="card"><div class="exp-meta">${r.enabled ? `Automatic reminders are ${FREQ[r.frequency] ? FREQ[r.frequency].toLowerCase() : "on"}.` : "Automatic reminders are off."} Only an admin can change this. You can still copy a reminder to send by hand below.</div></div>`;
+  body.innerHTML = `
+    ${settingsCard}
     <h3 style="margin:22px 0 10px">Who owes right now</h3>
     ${debtors.length ? debtors.map((d) => {
       const transfers = settleUp(base).filter((t) => t.from === d.m.id);
@@ -472,7 +489,7 @@ function renderReminders(body, l) {
       </div>`;
     }).join("") : emptyState("✅", "Nobody owes anything", "No reminders needed right now.")}`;
 
-  $("#remSave").onclick = () => {
+  if ($("#remSave")) $("#remSave").onclick = () => {
     store.updateLedger(l.id, { reminder: { ...r, enabled: $("#remOn").checked, frequency: $("#remFreq").value, message: $("#remMsg").value } });
     toast("Reminder settings saved."); render();
   };
@@ -484,7 +501,11 @@ function renderReminders(body, l) {
 }
 
 function reminderText(l, member, transfers) {
-  const lines = transfers.map((t) => `  • Pay ${store.memberById(t.to)?.name}: ${formatMoney(t.amountMinor, l.baseCurrency)}`);
+  const exps = rolledExpenses(l);
+  const lines = transfers.map((t) => {
+    const payTo = payToFor(t.to, exps);
+    return `  • Pay ${store.memberById(t.to)?.name}: ${formatMoney(t.amountMinor, l.baseCurrency)}${payTo ? `\n      ↳ send to: ${payTo}` : ""}`;
+  });
   const total = transfers.reduce((a, t) => a + t.amountMinor, 0);
   const custom = l.reminder?.message ? l.reminder.message + "\n\n" : "";
   return `Subject: Reminder: you owe ${formatMoney(total, l.baseCurrency)} for "${l.name}"
@@ -504,6 +525,7 @@ function renderMembers(body, l) {
   const parentG = (l.kind === "trip" && l.parentId) ? store.ledgerById(l.parentId) : null;
   const groupAdmins = parentG ? new Set([parentG.createdBy, ...(parentG.admins || [])].filter(Boolean)) : new Set();
   const iAmAdmin = CLOUD && iAmAdminOf(l);
+  const admin = !CLOUD || iAmAdminOf(l); // may I manage this ledger (add/remove members)?
   const isOwner = (id, m) => id === "you" ? !!l.iAmOwner : !!(m && m.userId && m.userId === l.createdBy);
   const ownAdmin = (id, m) => id === "you" ? !!l.iAmAdmin : !!(m && m.userId && ownAdmins.has(m.userId));
   const viaGroup = (id, m) => {
@@ -525,13 +547,15 @@ function renderMembers(body, l) {
       <div class="avatar" data-profile="${id}" style="cursor:pointer">${esc(initials(m?.name))}</div>
       <div class="grow" data-profile="${id}" style="cursor:pointer"><b>${esc(m?.name)}</b>${id === "you" ? " (you)" : ""}${adminBadge}${handle} ${meta}${pending ? ` <span class="tag" style="color:var(--amber)">invited · not signed up yet</span>` : ""}</div>
       ${toggleBtn}
-      ${id === "you" ? "" : `<button class="icon-btn" data-remove="${id}" title="Remove from ${esc(ledgerDisplayName(l))}">✖</button>`}
+      ${(id === "you" || !admin) ? "" : `<button class="icon-btn" data-remove="${id}" title="Remove from ${esc(ledgerDisplayName(l))}">✖</button>`}
     </div>`;
   }).join("");
   const inheritNote = parentG ? `<div class="hint" style="margin:0 0 10px">👑 Admins of the group “${esc(parentG.name)}” can also manage this trip while it's tagged to it.</div>` : "";
 
   let addHtml;
-  if (CLOUD) {
+  if (!admin) {
+    addHtml = `<div class="card" style="margin-top:16px"><div class="exp-meta">👀 You're a member here. Only an admin can add or remove people.</div></div>`;
+  } else if (CLOUD) {
     const inLedger = new Set(l.memberIds);
     const parent = l.kind === "trip" && l.parentId ? store.ledgerById(l.parentId) : null;
     const friendChip = (m) => `<span class="chip" data-add="${m.id}" title="${esc(m.email || (m.username ? "@" + m.username : ""))}">＋ ${esc(m.name)}${m.userId ? "" : ' <span class="tag" style="color:var(--amber)">pending</span>'}</span>`;
@@ -573,7 +597,7 @@ function renderMembers(body, l) {
   body.innerHTML = `${inheritNote}<div class="card" style="padding:6px 0">${membersHtml}</div>${addHtml}`;
   body.querySelectorAll("[data-remove]").forEach((b) => b.onclick = () => {
     const m = store.memberById(b.dataset.remove);
-    confirmDelete(`Remove ${m ? m.name : "this person"} from ${ledgerDisplayName(l)}?`, () => { store.updateLedger(l.id, { memberIds: l.memberIds.filter((x) => x !== b.dataset.remove) }); render(); toast("Removed."); }, { confirmLabel: "Remove" });
+    confirmDelete(`Remove ${m ? m.name : "this person"} from ${ledgerDisplayName(l)}?`, () => { store.updateLedger(l.id, { memberIds: l.memberIds.filter((x) => x !== b.dataset.remove) }); render(); toast("Removed."); }, { confirmLabel: "Remove", phrase: CONFIRM_WORD });
   });
   body.querySelectorAll("[data-profile]").forEach((el) => el.onclick = () => { const id = el.dataset.profile; if (id === "you") openPersonModal("you"); else openFriendProfile(store.memberById(id)); });
   body.querySelectorAll("[data-admin]").forEach((b) => b.onclick = async () => {
@@ -582,7 +606,8 @@ function renderMembers(body, l) {
     if (r.ok) { render(); toast(make ? "Made admin." : "Removed admin."); } else toast(r.error || "Couldn't update.");
   });
 
-  if (CLOUD) {
+  if (!admin) { /* non-admins can't add people */ }
+  else if (CLOUD) {
     body.querySelectorAll("[data-add]").forEach((b) => b.onclick = async () => {
       const r = await store.addFriendToLedger(l.id, b.dataset.add); render();
       if (r && r.name) toast(r.emailed ? `Added ${r.name} — emailed them.` : `Added ${r.name}.`);
@@ -634,7 +659,8 @@ function openInvite(l, res) {
 }
 
 function renderSettings(body, l) {
-  body.innerHTML = `
+  const admin = !CLOUD || iAmAdminOf(l);
+  const settingsCard = admin ? `
     <div class="card">
       <label style="margin-top:0">Name</label>
       <input id="lName" value="${esc(l.name)}">
@@ -646,7 +672,10 @@ function renderSettings(body, l) {
         <button class="btn" id="lSave">Save</button>
         <button class="btn danger" id="lDel">Delete ${kindLabel[l.kind].toLowerCase()}</button>
       </div>
-    </div>
+    </div>`
+    : `<div class="card"><div class="exp-meta">👀 Only an admin can rename, change, or delete this ${kindLabel[l.kind].toLowerCase()}. You can still export below.</div></div>`;
+  body.innerHTML = `
+    ${settingsCard}
     <div class="card" style="margin-top:14px">
       <label style="margin-top:0">Export</label>
       <div class="hint">Download all expenses${l.kind === "group" && childrenOf(l).length ? " (including its trips)" : ""} as a spreadsheet.</div>
@@ -655,12 +684,12 @@ function renderSettings(body, l) {
         <button class="btn ghost" id="lPrint">🖨 Print / Save as PDF</button>
       </div>
     </div>`;
-  $("#lSave").onclick = () => {
+  if ($("#lSave")) $("#lSave").onclick = () => {
     const patch = { name: $("#lName").value.trim() || l.name, baseCurrency: $("#lCur").value };
     if (l.kind === "trip") patch.parentId = $("#lParent").value || null;
     store.updateLedger(l.id, patch); render(); toast("Saved.");
   };
-  $("#lDel").onclick = () => confirmDelete(`Delete "${ledgerDisplayName(l)}" and all of its expenses?`, () => { store.removeLedger(l.id); view = { type: "dashboard" }; render(); toast("Deleted."); });
+  if ($("#lDel")) $("#lDel").onclick = () => confirmDelete(`Delete "${ledgerDisplayName(l)}" and all of its expenses? Everyone in it loses access.`, () => { store.removeLedger(l.id); view = { type: "dashboard" }; render(); toast("Deleted."); }, { confirmLabel: `Delete ${kindLabel[l.kind].toLowerCase()}`, phrase: CONFIRM_WORD });
   $("#lCsv").onclick = () => exportLedgerCSV(l);
   $("#lPrint").onclick = () => exportLedgerPrint(l);
 }
@@ -732,10 +761,21 @@ function modal(title, bodyHTML, footHTML) {
 }
 function closeModal() { const h = $("#modalHost"); h.hidden = true; h.innerHTML = ""; }
 
-// In-app confirmation used for every delete/remove action.
+// In-app confirmation used for every delete/remove action. For heavier deletions
+// (groups, trips, members) pass opts.phrase to require typing it to proceed.
+const CONFIRM_WORD = "abracadabra";
 function confirmDelete(message, onYes, opts = {}) {
-  modal(opts.title || "Are you sure?", `<p style="margin-top:0;line-height:1.5">${esc(message)}</p><p class="hint" style="margin-top:8px">This can't be undone.</p>`,
-    `<button class="btn ghost" data-close>Cancel</button><button class="btn danger" id="confirmYes">${esc(opts.confirmLabel || "Delete")}</button>`);
+  const phrase = opts.phrase;
+  modal(opts.title || "Are you sure?", `
+    <p style="margin-top:0;line-height:1.5">${esc(message)}</p>
+    <p class="hint" style="margin-top:8px">This can't be undone.</p>
+    ${phrase ? `<label>Type <b>${esc(phrase)}</b> below to confirm</label><input id="confirmPhrase" autocapitalize="off" autocomplete="off" spellcheck="false" placeholder="${esc(phrase)}">` : ""}
+  `, `<button class="btn ghost" data-close>Cancel</button><button class="btn danger" id="confirmYes"${phrase ? " disabled" : ""}>${esc(opts.confirmLabel || "Delete")}</button>`);
+  if (phrase) {
+    const inp = $("#confirmPhrase"), btn = $("#confirmYes");
+    inp.oninput = () => { btn.disabled = inp.value.trim().toLowerCase() !== phrase.toLowerCase(); };
+    setTimeout(() => inp.focus(), 30);
+  }
   $("#confirmYes").onclick = () => { closeModal(); onYes(); };
 }
 
@@ -904,6 +944,10 @@ function openExpenseModal(ledgerId, editId) {
     <div id="splitArea" style="margin-top:12px"></div>
     <div id="splitStatus" class="hint"></div>
 
+    <label>Pay the payer back to… (optional)</label>
+    <textarea id="ePay" rows="2" placeholder="e.g. Venmo @drin · Zelle 555-123-4567 · PayPal drin@email · BPI 1234-5678 · or just 'Cash'">${esc(existing?.paymentInfo || "")}</textarea>
+    <div class="hint">Venmo, Zelle, PayPal, a bank account, Cash, or anything else — shown to everyone who owes on this expense so they know where to send the money.</div>
+
     <label>Receipt photo (optional)</label>
     <input id="eReceipt" type="file" accept="image/*">
     <div id="receiptPrev" style="margin-top:8px">${st.receipt ? `<img src="${st.receipt}" class="receipt-thumb">` : ""}</div>
@@ -1003,6 +1047,7 @@ function openExpenseModal(ledgerId, editId) {
       paidBy: [{ memberId: st.payer, amountMinor }],
       split, category: $("#eCat").value, date: new Date($("#eDate").value).getTime() || Date.now(),
       receipt: st.receipt || null,
+      paymentInfo: ($("#ePay").value || "").trim() || null,
     };
     const errs = validateExpense(exp);
     if (errs.length && !confirm("Heads up — the split doesn't add up exactly:\n\n" + errs.join("\n") + "\n\nSave anyway?")) return;
@@ -1129,6 +1174,11 @@ function render() {
   else if (view.type === "friends") renderFriends();
   else if (view.type === "friend") renderFriendDetail(view.friendId);
   else renderLedger();
+  try { localStorage.setItem("uno.view", JSON.stringify(view)); } catch (e) {}
+}
+// Restore the last page so a refresh lands where you were.
+function restoreView() {
+  try { const v = JSON.parse(localStorage.getItem("uno.view")); if (v && v.type) view = v; } catch (e) {}
 }
 
 // wire global sidebar buttons
@@ -1149,7 +1199,7 @@ function openPeopleModal() {
   $("#editYou").onclick = () => openPersonModal("you");
   if ($("#ppAdd")) $("#ppAdd").onclick = () => { const n = $("#ppName").value.trim(); if (!n) return toast("Enter a name."); store.addPerson({ name: n, email: $("#ppEmail").value }); openPeopleModal(); render(); };
   document.querySelectorAll("[data-pedit]").forEach((b) => b.onclick = () => openPersonModal(b.dataset.pedit));
-  document.querySelectorAll("[data-pdel]").forEach((b) => b.onclick = () => confirmDelete("Remove this person?", () => { store.removePerson(b.dataset.pdel); openPeopleModal(); render(); }, { confirmLabel: "Remove" }));
+  document.querySelectorAll("[data-pdel]").forEach((b) => b.onclick = () => confirmDelete("Remove this person from all your groups and trips?", () => { store.removePerson(b.dataset.pdel); openPeopleModal(); render(); }, { confirmLabel: "Remove", phrase: CONFIRM_WORD }));
 }
 
 function addSignOut() {
@@ -1173,10 +1223,12 @@ async function boot() {
     }
     if (!ok) return; // login screen is showing; don't render the app
     addSignOut();
+    restoreView();
     render();
     if (!store.state.you.username) openUsernameModal(true); // required on first sign-in
     return;
   }
+  restoreView();
   render();
 }
 boot();
