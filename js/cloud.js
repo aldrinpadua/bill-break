@@ -115,9 +115,14 @@ class CloudStore {
     you.email = (you.email || myEmail || "").toLowerCase();
 
     // Claim any pending invites addressed to my email (sets user_id on rows the
-    // inviter created for me before I had an account). Allowed by the
-    // "claim own invite" RLS policy in supabase/invites.sql.
-    await this._try("claim invites", () => this.sb.from("ledger_members").update({ user_id: myId }).is("user_id", null).ilike("email", myEmail));
+    // inviter created for me before I had an account) — so I become a real,
+    // visible member without needing the inviter to refresh. Prefer the
+    // security-definer RPC (see supabase/friend-sync.sql); fall back to the older
+    // RLS-based update if that function isn't deployed yet.
+    await this._try("claim invites", async () => {
+      const { error } = await this.sb.rpc("claim_my_invites");
+      if (error) await this.sb.from("ledger_members").update({ user_id: myId }).is("user_id", null).ilike("email", myEmail);
+    });
 
     const ledRes = await this.sb.from("ledgers").select("*");
     if (ledRes.error) throw new Error("Loading your groups failed: " + ledRes.error.message);
@@ -259,6 +264,7 @@ class CloudStore {
     const l = this.ledgerById(ledgerId);
     const person = this.memberById(personId);
     if (!l || !person || l.memberIds.includes(personId)) return { ok: false };
+    await this._pendingWrites?.[ledgerId]; // make sure the ledger row exists first
     // If this friend still looks "pending" but has an email, they may have
     // signed up since — re-check so we add them as a full member, not pending.
     if (!person.userId && person.email) {
@@ -311,6 +317,7 @@ class CloudStore {
     const l = this.ledgerById(ledgerId);
     if (!l) return { status: "error", message: "Group not found." };
     if (!input) return { status: "error", message: "Enter an email or @username." };
+    await this._pendingWrites?.[ledgerId]; // make sure the ledger row exists first
     const isEmail = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(input);
     const handle = input.replace(/^@/, "").toLowerCase();
     const email = isEmail ? input.toLowerCase() : null;
@@ -392,7 +399,11 @@ class CloudStore {
     const l = { id, kind, name: name.trim(), baseCurrency, memberIds: [...new Set(["you", ...memberIds])], parentId, reminder: { enabled: false, frequency: "weekly", lastSentAt: null, message: "" }, admins: [], createdBy: myId, iAmAdmin: true, iAmOwner: true, createdAt: Date.now() };
     this.myRefByLedger[id] = myId; // I created it, so my ref here is my auth id
     this.state.ledgers.push(l); this._notify();
-    this._try("ledger insert", async () => {
+    // Track the create so member writes can wait for the ledger row to exist first
+    // (otherwise adding a friend right after creating the 1:1 ledger can hit a
+    // foreign-key race and silently drop the friend's membership row).
+    this._pendingWrites = this._pendingWrites || {};
+    this._pendingWrites[id] = this._try("ledger insert", async () => {
       await this.sb.from("ledgers").insert({ id, kind, name: l.name, base_currency: baseCurrency, parent_id: parentId, reminder: l.reminder, created_by: myId });
       await this.sb.from("ledger_members").insert(l.memberIds.map((ref) => this._memberRow(id, ref)));
     });
