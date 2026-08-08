@@ -12,4 +12,5 @@ export const CONFIG = {
   MODE: "cloud", // "local" | "cloud"
   SUPABASE_URL: "https://lweuzfauuwqaueyctmmj.supabase.co",
   SUPABASE_ANON_KEY: "sb_publishable_mA1m1Oc6AW0ZfSWkHdxYLQ_Ph_sHhHX",
+  TURNSTILE_SITE_KEY: "0x4AAAAAAEKiJTjylC-TWSJv",
 };
