@@ -1,11 +1,12 @@
--- Bill Break — expense edit permissions + group/trip admins.
+-- UNO Ledger — expense edit permissions + group/trip admins.
 -- Run this ONCE in Supabase → SQL Editor, after schema.sql.
 
 -- Each ledger has a list of admin user_ids. The creator is always an admin
 -- (implicitly), so this list is the EXTRA admins they designate.
 alter table ledgers add column if not exists admins uuid[] not null default '{}';
 
--- Am I an admin (or the creator) of this ledger?
+-- Am I an admin (or the creator) of this ledger? A trip also inherits its parent
+-- group's admins while it's tagged to that group (dynamic — untag reverts it).
 create or replace function is_ledger_admin(l uuid)
 returns boolean
 language sql security definer stable
@@ -14,6 +15,11 @@ as $$
   select exists (
     select 1 from ledgers g
     where g.id = l and (g.created_by = auth.uid() or auth.uid() = any(g.admins))
+  )
+  or exists (
+    select 1 from ledgers t
+    join ledgers p on p.id = t.parent_id
+    where t.id = l and (p.created_by = auth.uid() or auth.uid() = any(p.admins))
   );
 $$;
 grant execute on function is_ledger_admin(uuid) to authenticated;
