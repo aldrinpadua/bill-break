@@ -186,6 +186,8 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
   .modal { width: 100%; max-height: 92vh; }
   .row { flex-wrap: wrap; }
   .exp-actions { flex-direction: column; }
+  /* 16px form controls stop iOS Safari from auto-zooming when you focus a field */
+  input, select, textarea { font-size: 16px; }
 }
 @media (min-width: 821px) { .backdrop { display: none !important; } }
 
