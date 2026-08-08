@@ -18,6 +18,39 @@ let supabase = null;
 let myId = null;   // auth user id (uuid)
 let myEmail = "";
 
+// ---------- Cloudflare Turnstile (CAPTCHA on the magic-link login) ----------
+// Public site key from Cloudflare → Turnstile. Safe to expose. Add it to config.js:
+//   TURNSTILE_SITE_KEY: "0x4AAAA...".  Leave it empty/undefined to disable the widget.
+const TURNSTILE_SITE_KEY = CONFIG.TURNSTILE_SITE_KEY || "";
+let _captchaToken = "";
+let _turnstileId = null;
+function mountTurnstile() {
+  if (!TURNSTILE_SITE_KEY) return;                 // not configured → no widget
+  const box = document.getElementById("cfTurnstile");
+  if (!box) return;
+  const render = () => {
+    try {
+      _turnstileId = window.turnstile.render(box, {
+        sitekey: TURNSTILE_SITE_KEY,
+        callback: (t) => { _captchaToken = t; },
+        "expired-callback": () => { _captchaToken = ""; },
+        "error-callback": () => { _captchaToken = ""; },
+      });
+    } catch (e) { console.error("[turnstile] render failed:", e); }
+  };
+  if (window.turnstile?.render) return render();
+  // the api.js script loads async — wait for it (up to ~10s)
+  let tries = 0;
+  const iv = setInterval(() => {
+    if (window.turnstile?.render) { clearInterval(iv); render(); }
+    else if (++tries > 100) clearInterval(iv);
+  }, 100);
+}
+function resetTurnstile() {
+  _captchaToken = "";
+  if (_turnstileId !== null && window.turnstile) { try { window.turnstile.reset(_turnstileId); } catch {} }
+}
+
 async function getClient() {
   if (supabase) return supabase;
   const { createClient } = await import("https://esm.sh/@supabase/supabase-js@2");
@@ -418,7 +451,7 @@ function loginScreen(onGoogle, onMagic) {
   app.innerHTML = `
     <div class="login-screen">
       <div class="login-card">
-        <div class="login-brand"><span style="font-size:40px">🧾</span><h1>UNO Ledger</h1><p>Split trips & bills with friends.</p></div>
+        <div class="login-brand"><img src="./assets/logo.svg" alt="UNO Ledger" style="width:44px;height:44px;border-radius:10px"><h1>UNO Ledger</h1><p>Split trips & bills with friends.</p></div>
         <button class="btn google-btn" id="gBtn">
           <svg width="18" height="18" viewBox="0 0 48 48"><path fill="#FFC107" d="M43.6 20.5H42V20H24v8h11.3C33.7 32.4 29.3 35 24 35c-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.5 5.1 29.5 3 24 3 12.4 3 3 12.4 3 24s9.4 21 21 21c10.5 0 20-7.6 20-21 0-1.2-.1-2.3-.4-3.5z"/><path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.7 16 19 13 24 13c3.1 0 5.9 1.2 8 3.1l5.7-5.7C34.5 5.1 29.5 3 24 3 16 3 9.1 7.6 6.3 14.7z"/><path fill="#4CAF50" d="M24 45c5.2 0 10-2 13.6-5.2l-6.3-5.3C29.2 35.5 26.7 36 24 36c-5.3 0-9.7-2.6-11.3-6.9l-6.5 5C9.1 40.4 16 45 24 45z"/><path fill="#1976D2" d="M43.6 20.5H42V20H24v8h11.3c-.8 2.2-2.2 4.1-4 5.5l6.3 5.3C41.6 36.6 44 31 44 24c0-1.2-.1-2.3-.4-3.5z"/></svg>
           Continue with Google
@@ -426,6 +459,7 @@ function loginScreen(onGoogle, onMagic) {
         <div class="login-or"><span>or</span></div>
         <label>Email — we'll send you a magic sign-in link</label>
         <input id="mEmail" type="email" placeholder="you@example.com" autocomplete="email">
+        ${TURNSTILE_SITE_KEY ? `<div id="cfTurnstile" style="margin-top:10px"></div>` : ""}
         <button class="btn" id="mBtn" style="width:100%;margin-top:10px">Send magic link</button>
         <div id="loginMsg" class="login-msg"></div>
       </div>
@@ -434,8 +468,10 @@ function loginScreen(onGoogle, onMagic) {
   document.getElementById("mBtn").onclick = () => {
     const email = document.getElementById("mEmail").value.trim();
     if (!email) { document.getElementById("loginMsg").textContent = "Enter your email first."; return; }
+    if (TURNSTILE_SITE_KEY && !_captchaToken) { loginMsg("Please complete the “I’m human” check first."); return; }
     onMagic(email);
   };
+  mountTurnstile();
 }
 function loginMsg(text, ok) { const el = document.getElementById("loginMsg"); if (el) { el.textContent = text; el.className = "login-msg " + (ok ? "ok" : "err"); } }
 
@@ -454,8 +490,12 @@ export async function startCloud() {
       },
       async (email) => {
         loginMsg("Sending link…", true);
-        const { error } = await sb.auth.signInWithOtp({ email, options: { emailRedirectTo: window.location.href.split("#")[0] } });
+        const { error } = await sb.auth.signInWithOtp({
+          email,
+          options: { emailRedirectTo: window.location.href.split("#")[0], captchaToken: _captchaToken || undefined },
+        });
         loginMsg(error ? ("Couldn't send: " + error.message) : "✅ Check your inbox for the sign-in link, then come back here.", !error);
+        resetTurnstile(); // each attempt needs a fresh token
       }
     );
     // when auth completes (magic link click / OAuth return) reload to re-run boot
