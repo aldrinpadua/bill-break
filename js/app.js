@@ -610,7 +610,8 @@ function renderMembers(body, l) {
   else if (CLOUD) {
     body.querySelectorAll("[data-add]").forEach((b) => b.onclick = async () => {
       const r = await store.addFriendToLedger(l.id, b.dataset.add); render();
-      if (r && r.name) toast(r.emailed ? `Added ${r.name} — emailed them.` : `Added ${r.name}.`);
+      if (r && r.already) toast(`${r.name || "They"} are already in this group.`);
+      else if (r && r.name) toast(r.emailed ? `Added ${r.name} — emailed them.` : `Added ${r.name}.`);
     });
     $("#memAdd").onclick = async () => {
       const email = $("#memEmail").value.trim(); if (!email) return toast("Enter an email or @username.");

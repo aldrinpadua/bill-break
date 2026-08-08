@@ -140,10 +140,21 @@ class CloudStore {
     this.state.ledgers = ledgers.map((l) => {
       const myRef = this.myRefByLedger[l.id];
       const admins = l.admins || [];
+      // Collapse rows that resolve to the same person (e.g. a pending invite row
+      // plus a signed-up row for the same user) so nobody appears twice.
+      const seenIdentity = new Set();
+      const dedupMembers = members.filter((m) => m.ledger_id === l.id)
+        // Prefer the signed-up row (has user_id) over a stale pending row for the same person.
+        .sort((a, b) => (b.user_id ? 1 : 0) - (a.user_id ? 1 : 0))
+        .filter((m) => {
+          const key = ((m.email || "").toLowerCase()) || m.user_id || m.member_ref;
+          if (seenIdentity.has(key)) return false;
+          seenIdentity.add(key); return true;
+        });
       return {
         id: l.id, kind: l.kind, name: l.name, baseCurrency: l.base_currency,
         parentId: l.parent_id,
-        memberIds: members.filter((m) => m.ledger_id === l.id).map((m) => mapRef(m.member_ref, myRef, "you")),
+        memberIds: dedupMembers.map((m) => mapRef(m.member_ref, myRef, "you")),
         reminder: l.reminder || { enabled: false, frequency: "weekly", lastSentAt: null, message: "" },
         admins, createdBy: l.created_by,
         iAmAdmin: l.created_by === myId || admins.includes(myId),
@@ -159,6 +170,18 @@ class CloudStore {
   // ---- reads (mirror LocalStore) ----
   allMembers() { return [this.state.you, ...this.state.people]; }
   memberById(id) { return this.allMembers().find((m) => m.id === id); }
+  // Is someone with this identity already a member of the ledger? Matches on the
+  // underlying user id, email, or username — not just the member_ref — so the same
+  // person can't be added twice (e.g. once as a pending invite, once after signing up).
+  _existingMember(l, { userId = null, email = null, username = null } = {}) {
+    const em = (email || "").toLowerCase() || null;
+    const un = (username || "").toLowerCase() || null;
+    return l.memberIds.map((id) => this.memberById(id)).find((m) => m && (
+      (userId && m.userId && m.userId === userId) ||
+      (em && (m.email || "").toLowerCase() === em) ||
+      (un && (m.username || "").toLowerCase() === un)
+    ));
+  }
   ledgers() { return this.state.ledgers; }
   ledgerById(id) { return this.state.ledgers.find((l) => l.id === id); }
   expensesFor(ledgerId) {
@@ -212,6 +235,9 @@ class CloudStore {
         if (u && u.id !== myId) { person.userId = u.id; if (u.username) person.username = u.username; if (u.display_name) person.name = u.display_name; }
       } catch (e) { console.error("[cloud] re-resolve friend failed:", e.message || e); }
     }
+    // Don't add the same underlying person twice (e.g. once pending, once signed up).
+    const already = this._existingMember(l, { userId: person.userId, email: person.email, username: person.username });
+    if (already) return { ok: false, name: already.name, already: true };
     l.memberIds = [...new Set([...l.memberIds, personId])]; this._notify();
     await this._try("add friend to ledger", () => this.sb.from("ledger_members").upsert(this._memberRow(ledgerId, personId), { onConflict: "ledger_id,member_ref" }));
     const emailed = person.email ? await this._notifyMember("added", person.email, person.name, l.name) : false;
@@ -266,7 +292,9 @@ class CloudStore {
 
     if (user && user.id === myId) return { status: "exists", message: "That's you — you're already in this group." };
     if (user) {
-      if (l.memberIds.includes(user.id)) return { status: "exists", message: `${user.display_name || "They"} are already in this group.` };
+      const already = l.memberIds.includes(user.id) ? this.memberById(user.id)
+        : this._existingMember(l, { userId: user.id, email: user.email || email, username: user.username });
+      if (already) return { status: "exists", message: `${already.name || user.display_name || "They"} are already in this group.` };
       const label = user.display_name || user.username || (email ? email.split("@")[0] : handle);
       const resolvedEmail = email || user.email || ""; // works whether added by email or username
       let person = this.state.people.find((p) => p.id === user.id);
@@ -280,7 +308,7 @@ class CloudStore {
 
     // not found
     if (!isEmail) return { status: "error", message: `No one has the username @${handle}. To invite someone new, use their email instead.` };
-    const dupe = l.memberIds.map((id) => this.memberById(id)).find((m) => m && (m.email || "").toLowerCase() === email);
+    const dupe = this._existingMember(l, { email });
     if (dupe) return { status: "exists", message: `${dupe.name} is already in this group.` };
     const ref = crypto.randomUUID();
     const person = { id: ref, name: email.split("@")[0], email, username: null, userId: null };
