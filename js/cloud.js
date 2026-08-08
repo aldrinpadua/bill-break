@@ -459,7 +459,7 @@ function loginScreen(onGoogle, onMagic) {
         <div class="login-or"><span>or</span></div>
         <label>Email — we'll send you a magic sign-in link</label>
         <input id="mEmail" type="email" placeholder="you@example.com" autocomplete="email">
-        ${TURNSTILE_SITE_KEY ? `<div id="cfTurnstile" style="margin-top:10px"></div>` : ""}
+        ${TURNSTILE_SITE_KEY ? `<div id="cfTurnstile" style="margin-top:10px;display:flex;justify-content:center"></div>` : ""}
         <button class="btn" id="mBtn" style="width:100%;margin-top:10px">Send magic link</button>
         <div id="loginMsg" class="login-msg"></div>
       </div>
