@@ -1,4 +1,4 @@
-// Bill Break — reminder email sender (Supabase Edge Function, Deno).
+// UNO Ledger — reminder email sender (Supabase Edge Function, Deno).
 //
 // What it does, each time it runs (see ../schedule.sql for the cron that runs it):
 //   1. Loads every ledger with reminder.enabled = true.
@@ -10,7 +10,7 @@
 // Secrets it needs (Supabase → Edge Functions → Secrets):
 //   SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY  (provided automatically)
 //   RESEND_API_KEY   — from resend.com
-//   FROM_EMAIL       — a verified sender, e.g. "Bill Break <reminders@yourdomain.com>"
+//   FROM_EMAIL       — a verified sender, e.g. "UNO Ledger <reminders@yourdomain.com>"
 //                      (or "onboarding@resend.dev" while testing)
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -76,6 +76,13 @@ function computePaid(e: any): Map<string, number> {
   const paid = new Map<string, number>();
   for (const p of e.paidBy || []) paid.set(p.memberId, (paid.get(p.memberId) || 0) + p.amountMinor);
   return paid;
+}
+// The most recent pay-to details a person provided on an expense they paid.
+function payToFor(personRef: string, expenses: any[]): string {
+  const rel = (expenses || [])
+    .filter((e) => !e.settlement && e.paymentInfo && computePaid(e).has(personRef))
+    .sort((a, b) => (b.date || b.createdAt || 0) - (a.date || a.createdAt || 0));
+  return rel.length ? rel[0].paymentInfo : "";
 }
 function computeBalances(expenses: any[], base: string): Map<string, number> {
   const major = new Map<string, number>();
@@ -148,9 +155,12 @@ Deno.serve(async () => {
       if (net >= 0 || !m.email) continue; // only people who owe, and have an email
       const owedList = transfers.filter((t) => t.from === m.member_ref);
       const total = owedList.reduce((a, t) => a + t.amountMinor, 0);
-      const lines = owedList.map((t) => `  • Pay ${nameOf(t.to)}: ${fmt(t.amountMinor, l.base_currency)}`).join("\n");
+      const lines = owedList.map((t) => {
+        const payTo = payToFor(t.to, expenses);
+        return `  • Pay ${nameOf(t.to)}: ${fmt(t.amountMinor, l.base_currency)}${payTo ? `\n      ↳ send to: ${payTo}` : ""}`;
+      }).join("\n");
       const custom = l.reminder?.message ? l.reminder.message + "\n\n" : "";
-      const body = `Hi ${m.name},\n\n${custom}Friendly reminder about "${l.name}". You currently owe ${fmt(total, l.base_currency)}:\n\n${lines}\n\nThanks!\n— sent via Bill Break`;
+      const body = `Hi ${m.name},\n\n${custom}Friendly reminder about "${l.name}". You currently owe ${fmt(total, l.base_currency)}:\n\n${lines}\n\nThanks!\n— sent via UNO Ledger`;
       if (await sendEmail(m.email, `Reminder: you owe ${fmt(total, l.base_currency)} for "${l.name}"`, body)) sent++;
     }
 
