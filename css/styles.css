@@ -38,7 +38,7 @@ body {
   display: flex; flex-direction: column; gap: 14px;
 }
 .brand { display: flex; align-items: center; gap: 10px; padding: 4px 6px; }
-.brand-mark { font-size: 26px; }
+.brand-mark { width: 30px; height: 30px; display: block; border-radius: 8px; }
 .brand-name { font-weight: 700; letter-spacing: .2px; }
 .brand-sub { font-size: 11px; color: var(--muted); }
 .you-card {
@@ -185,6 +185,9 @@ input:focus, select:focus, textarea:focus { outline: none; border-color: var(--b
   .page-head .btn { padding: 9px 13px; }
   .modal { width: 100%; max-height: 92vh; }
   .row { flex-wrap: wrap; }
+  /* Give every field a real min width so 3-across rows (Paid by / Date / Category)
+     wrap cleanly instead of overlapping. Overrides inline flex-basis on mobile. */
+  .row > * { flex: 1 1 140px !important; min-width: 0; }
   .exp-actions { flex-direction: column; }
   /* 16px form controls stop iOS Safari from auto-zooming when you focus a field */
   input, select, textarea { font-size: 16px; }
