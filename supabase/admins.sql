@@ -38,6 +38,25 @@ create policy "insert expenses" on expenses for insert with check (is_ledger_mem
 create policy "update expenses" on expenses for update using (created_by = auth.uid() or is_ledger_admin(ledger_id));
 create policy "delete expenses" on expenses for delete using (created_by = auth.uid() or is_ledger_admin(ledger_id));
 
+-- Management is admin-only: only admins can rename/change/delete a ledger or
+-- add/remove its members. Any member can still view, add expenses, and settle up.
+drop policy if exists "update ledgers" on ledgers;
+create policy "update ledgers" on ledgers for update using (is_ledger_admin(id)) with check (is_ledger_admin(id));
+drop policy if exists "delete ledgers" on ledgers;
+create policy "delete ledgers" on ledgers for delete using (is_ledger_admin(id));
+
+drop policy if exists "rw members" on ledger_members;
+drop policy if exists "read members" on ledger_members;
+drop policy if exists "insert members" on ledger_members;
+drop policy if exists "update members" on ledger_members;
+drop policy if exists "delete members" on ledger_members;
+create policy "read members" on ledger_members for select
+  using (is_ledger_member(ledger_id) or exists (select 1 from ledgers g where g.id = ledger_id and g.created_by = auth.uid()));
+create policy "insert members" on ledger_members for insert with check (is_ledger_admin(ledger_id));
+-- update: an admin (to heal/rename) OR you updating your OWN row (claim/identity)
+create policy "update members" on ledger_members for update using (is_ledger_admin(ledger_id) or user_id = auth.uid());
+create policy "delete members" on ledger_members for delete using (is_ledger_admin(ledger_id));
+
 -- Promote/demote an admin — only an existing admin (or the creator) may do it.
 create or replace function set_ledger_admin(p_ledger uuid, p_user uuid, p_make boolean)
 returns json
