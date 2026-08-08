@@ -78,12 +78,20 @@ function friendNet(friendId) {
   }
   return byCur;
 }
+// Am I an (effective) admin of this ledger? A trip inherits its parent group's
+// admins while it's tagged to that group.
+function iAmAdminOf(l) {
+  if (!l) return false;
+  if (l.iAmAdmin) return true;
+  if (l.kind === "trip" && l.parentId) { const p = store.ledgerById(l.parentId); return !!(p && p.iAmAdmin); }
+  return false;
+}
 // Can I edit/delete this expense? Its creator always can; so can an admin of the
-// expense's own ledger. (Local mode is single-user, so always yes.)
+// expense's own ledger (or its parent group). Local mode is single-user → yes.
 function canEditExpense(e) {
   if (!CLOUD) return true;
   const l = store.ledgerById(e.ledgerId);
-  return !!(e.mine || (l && l.iAmAdmin));
+  return !!(e.mine || iAmAdminOf(l));
 }
 
 // Ledgers you share with a friend (top-level; groups include their trips).
@@ -492,20 +500,27 @@ Thanks!
 }
 
 function renderMembers(body, l) {
-  const adminSet = new Set([l.createdBy, ...(l.admins || [])].filter(Boolean));
-  const iAmAdmin = CLOUD && l.iAmAdmin;
-  const isAdmin = (id, m) => id === "you" ? !!l.iAmAdmin : !!(m && m.userId && adminSet.has(m.userId));
+  const ownAdmins = new Set([l.createdBy, ...(l.admins || [])].filter(Boolean));
+  const parentG = (l.kind === "trip" && l.parentId) ? store.ledgerById(l.parentId) : null;
+  const groupAdmins = parentG ? new Set([parentG.createdBy, ...(parentG.admins || [])].filter(Boolean)) : new Set();
+  const iAmAdmin = CLOUD && iAmAdminOf(l);
   const isOwner = (id, m) => id === "you" ? !!l.iAmOwner : !!(m && m.userId && m.userId === l.createdBy);
+  const ownAdmin = (id, m) => id === "you" ? !!l.iAmAdmin : !!(m && m.userId && ownAdmins.has(m.userId));
+  const viaGroup = (id, m) => {
+    if (id === "you") return !l.iAmAdmin && iAmAdminOf(l);
+    return !!(m && m.userId && groupAdmins.has(m.userId) && !ownAdmins.has(m.userId));
+  };
   const membersHtml = l.memberIds.map((id) => {
     const m = store.memberById(id);
     const pending = CLOUD && id !== "you" && m && !m.userId && m.email;
     const handle = CLOUD && m?.username ? ` <span class="exp-meta">@${esc(m.username)}</span>` : "";
     const meta = m?.email ? `<span class="exp-meta">${esc(m.email)}</span>` : (m?.username ? "" : `<span class="exp-meta">no email</span>`);
-    const adminBadge = CLOUD && isAdmin(id, m) ? ` <span class="tag" style="color:var(--brand)">${isOwner(id, m) ? "owner" : "admin"}</span>` : "";
-    // admin toggle: I'm an admin, target is a real user, and not the owner
-    const owner = isOwner(id, m);
-    const canToggle = iAmAdmin && id !== "you" && m && m.userId && !owner;
-    const toggleBtn = canToggle ? `<button class="btn ghost sm" data-admin="${m.userId}" data-make="${isAdmin(id, m) ? "0" : "1"}">${isAdmin(id, m) ? "Remove admin" : "Make admin"}</button>` : "";
+    const owner = isOwner(id, m), own = ownAdmin(id, m), via = viaGroup(id, m);
+    const badgeText = owner ? "owner" : own ? "admin" : via ? "admin · via group" : "";
+    const adminBadge = CLOUD && badgeText ? ` <span class="tag" style="color:var(--brand)">${badgeText}</span>` : "";
+    // toggle only for real users who aren't the owner and aren't admin-via-group
+    const canToggle = iAmAdmin && id !== "you" && m && m.userId && !owner && !via;
+    const toggleBtn = canToggle ? `<button class="btn ghost sm" data-admin="${m.userId}" data-make="${own ? "0" : "1"}">${own ? "Remove admin" : "Make admin"}</button>` : "";
     return `<div class="bal-row">
       <div class="avatar" data-profile="${id}" style="cursor:pointer">${esc(initials(m?.name))}</div>
       <div class="grow" data-profile="${id}" style="cursor:pointer"><b>${esc(m?.name)}</b>${id === "you" ? " (you)" : ""}${adminBadge}${handle} ${meta}${pending ? ` <span class="tag" style="color:var(--amber)">invited · not signed up yet</span>` : ""}</div>
@@ -513,6 +528,7 @@ function renderMembers(body, l) {
       ${id === "you" ? "" : `<button class="icon-btn" data-remove="${id}" title="Remove from ${esc(ledgerDisplayName(l))}">✖</button>`}
     </div>`;
   }).join("");
+  const inheritNote = parentG ? `<div class="hint" style="margin:0 0 10px">👑 Admins of the group “${esc(parentG.name)}” can also manage this trip while it's tagged to it.</div>` : "";
 
   let addHtml;
   if (CLOUD) {
@@ -554,7 +570,7 @@ function renderMembers(body, l) {
       </div>`;
   }
 
-  body.innerHTML = `<div class="card" style="padding:6px 0">${membersHtml}</div>${addHtml}`;
+  body.innerHTML = `${inheritNote}<div class="card" style="padding:6px 0">${membersHtml}</div>${addHtml}`;
   body.querySelectorAll("[data-remove]").forEach((b) => b.onclick = () => {
     const m = store.memberById(b.dataset.remove);
     confirmDelete(`Remove ${m ? m.name : "this person"} from ${ledgerDisplayName(l)}?`, () => { store.updateLedger(l.id, { memberIds: l.memberIds.filter((x) => x !== b.dataset.remove) }); render(); toast("Removed."); }, { confirmLabel: "Remove" });
