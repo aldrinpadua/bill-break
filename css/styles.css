@@ -129,6 +129,11 @@ input, select, textarea {
   border-radius: var(--radius-sm); padding: 10px 11px; font-size: 14px; font-family: inherit;
 }
 input:focus, select:focus, textarea:focus { outline: none; border-color: var(--brand); }
+/* Native date inputs render taller than other controls on iOS Safari — strip the
+   platform styling and its oversized inner value box so they match text/selects. */
+input[type="date"] { -webkit-appearance: none; appearance: none; min-height: 0; }
+input[type="date"]::-webkit-date-and-time-value { text-align: left; margin: 0; padding: 0; }
+input[type="date"]::-webkit-datetime-edit { padding: 0; line-height: normal; }
 .row { display: flex; gap: 10px; }
 .row > * { flex: 1; }
 .hint { color: var(--muted); font-size: 12px; margin-top: 5px; }
