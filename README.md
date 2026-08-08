@@ -1,0 +1,194 @@
+# 🧾 UNO Ledger
+
+Split trip and group bills with friends — like Splitwise, but with itemized
+splits, multi-currency, smart settle-up, and **automatic email reminders** to
+people who owe you.
+
+Hosted free on GitHub Pages. Works instantly with no backend (Phase 1), and
+upgrades to real accounts + auto-email when you connect free Supabase + Resend
+accounts (Phase 2).
+
+---
+
+## What it does
+
+- **Groups, trips, and 1:1 friends** — a group for your friend circle, a trip
+  for a getaway (optionally inside a group), or a simple ledger with one friend.
+- **Every kind of split** — equal, exact amounts, percentages, shares, or fully
+  **itemized** (who ate what, with tax/tip shared across everyone).
+- **Multi-currency** — log an expense in any currency with an exchange rate;
+  balances roll up into the ledger's base currency.
+- **Smart settle-up** — instead of everyone paying everyone, it computes the
+  *fewest* payments that clear all debts.
+- **Receipt photos** — attach a photo to any expense.
+- **Email reminders** — set a per-group frequency (daily → monthly); people who
+  owe get an automatic email. (Auto-send is Phase 2; Phase 1 drafts the email
+  for you to copy & send.)
+- **Backup / restore** — export your data to a file, import it anywhere.
+
+---
+
+## Phase 1 — get it live on GitHub Pages (10 minutes, free)
+
+Phase 1 needs **no accounts and no backend**. Data is saved in your browser.
+Perfect for using it solo and showing friends.
+
+1. **Create a GitHub repo.** Go to <https://github.com/new>, name it
+   `bill-break` (or anything), set it **Public**, and create it.
+2. **Upload these files.** On the repo page click **Add file → Upload files**,
+   drag in everything from this folder (keep the folders `css/`, `js/`,
+   `supabase/`), and **Commit**.
+3. **Turn on Pages.** Repo **Settings → Pages**. Under *Build and deployment*,
+   set **Source = Deploy from a branch**, **Branch = `main`**, **Folder =
+   `/ (root)`**, and **Save**.
+4. Wait ~1 minute, then open the URL GitHub shows you:
+   `https://<your-username>.github.io/bill-break/`
+
+That's it — you have a live bill-splitter. Add a trip, add expenses, check the
+**Settle up** tab.
+
+> Prefer the command line? From this folder:
+> ```
+> git init && git add . && git commit -m "UNO Ledger"
+> git branch -M main
+> git remote add origin https://github.com/<you>/bill-break.git
+> git push -u origin main
+> ```
+> then do step 3 above.
+
+### A note on Phase 1 storage
+Phase 1 keeps data **in the browser you use** (localStorage). It doesn't sync
+between devices or people. Use **💾 Backup** to move data or keep it safe. To
+get real multi-device, multi-person accounts and automatic emails, do Phase 2.
+
+---
+
+## Phase 2 — accounts, sync & automatic email reminders (free)
+
+This adds a database (so everyone logs in and shares data) and a scheduler that
+emails people who owe. All free at your scale.
+
+### 2a. Create a Supabase project
+1. Sign up at <https://supabase.com> → **New project** (pick a strong DB
+   password, any region).
+2. **SQL Editor → New query**, paste the contents of
+   [`supabase/schema.sql`](supabase/schema.sql), and **Run**. This creates the
+   tables, security rules, and the receipts storage bucket.
+3. **Run [`supabase/invites.sql`](supabase/invites.sql)** the same way. This adds
+   "add members by email", auto-join-on-signup, and tightens profile privacy.
+   Then **run [`supabase/usernames.sql`](supabase/usernames.sql)** too — it adds
+   unique usernames and lets people be added by `@username`.
+4. **Settings → API Keys**: copy the **Project URL** and the **publishable/anon**
+   key.
+5. Open [`js/config.js`](js/config.js), set `MODE: "cloud"`, and paste those two
+   values. Commit/push. (These two values are safe to publish — access is
+   still guarded by the security rules from step 2.)
+
+### Members & invites (how adding people works in cloud mode)
+You add people to a group from its **Members** tab, **by email**:
+- If that email already belongs to a UNO Ledger user, they join instantly.
+- If not, they're added as **pending** and you get an **invite link** to send.
+  When they sign up with that email, they auto-join every group they were
+  invited to. (No more typing in random names.)
+
+### 2b. Turn on automatic emails (Resend)
+1. Sign up at <https://resend.com> (free tier = 3,000 emails/month). To send
+   from your own domain, add + verify it; otherwise you can test with
+   `onboarding@resend.dev`. Copy your **API key**.
+2. Deploy the **two** edge functions (either via the CLI below, or paste each
+   into the Supabase dashboard's Edge Functions editor):
+   - `send-reminders` — the scheduled "you owe" emails.
+   - `notify-member` — emails people when they're invited to / added to a group.
+   ```
+   supabase login
+   supabase link --project-ref <your-project-ref>
+   supabase functions deploy send-reminders
+   supabase functions deploy notify-member
+   supabase secrets set RESEND_API_KEY=... FROM_EMAIL="UNO Ledger <hello@yourdomain.com>"
+   ```
+   Both functions share the same `RESEND_API_KEY` / `FROM_EMAIL` secrets.
+3. **Schedule it:** in Supabase **Database → Extensions**, enable **pg_cron**
+   and **pg_net**. Then **SQL Editor**, paste
+   [`supabase/schedule.sql`](supabase/schedule.sql), fill in your project ref +
+   anon key, and **Run**. It now runs daily and emails anyone who's due based on
+   each group's frequency.
+
+Test it immediately without waiting for the schedule:
+```
+curl -X POST https://<project-ref>.functions.supabase.co/send-reminders \
+  -H "Authorization: Bearer <anon-key>"
+```
+
+### 2c. Turn on login (this is what shows the sign-in page)
+
+Setting `MODE:"cloud"` in `js/config.js` is what makes the app show a **login
+screen** (Google + magic-link email) instead of running locally. Two setup
+steps in Supabase make login actually work:
+
+1. **Allow your site to log in.** Supabase → **Authentication → URL
+   Configuration**. Set **Site URL** to your GitHub Pages address
+   (`https://<you>.github.io/bill-break/`) and add the same address under
+   **Redirect URLs**. Without this, login links bounce back rejected.
+2. **Magic-link email works immediately** — no extra setup. Type your email on
+   the login screen, click the link Supabase sends, and you're in. Use this to
+   test first.
+3. **Google button (optional, one extra step):** Supabase → **Authentication →
+   Providers → Google** → enable it. It asks for a Google OAuth **Client ID +
+   Secret**, which you create free in the Google Cloud Console (APIs & Services
+   → Credentials → OAuth client ID → Web application), adding Supabase's callback
+   URL `https://<project-ref>.supabase.co/auth/v1/callback` as an authorized
+   redirect URI. Until you do this, the Google button will error — but magic
+   link covers everyone in the meantime.
+
+Then flip `js/config.js` to `MODE:"cloud"` with your Project URL + publishable
+key, push to GitHub, and the login screen appears. First person to sign in and
+create a trip is the owner; others they add by email can log in and see it too.
+
+> **Is it safe that my repo is public?** Yes. The `SUPABASE_URL` and the
+> **publishable/anon** key in `config.js` are *designed* to be public — every
+> Supabase web app ships them in the browser. Your data is protected by the
+> Row-Level-Security policies in `schema.sql`, not by hiding the key. The only
+> key that must stay secret is the **service_role / secret** key — and that one
+> lives only in your Edge Function secrets (server-side), never in this repo.
+
+---
+
+## How the money math works (and why it's exact)
+
+All amounts are stored as **integer minor units** (cents), never floats, so
+splits always sum back to the total to the penny. Remainders from uneven splits
+are distributed one cent at a time (largest-remainder method). The settle-up
+uses a greedy min-cash-flow algorithm to minimize the number of payments. The
+logic lives in [`js/money.js`](js/money.js) and [`js/split.js`](js/split.js) and
+is covered by tests in [`tests/engine.test.mjs`](tests/engine.test.mjs):
+
+```
+cd tests && node engine.test.mjs      # 20 assertions, all passing
+```
+
+---
+
+## Project layout
+
+```
+index.html               app shell
+css/styles.css           styling
+js/money.js              currency + cent-exact math
+js/split.js              split types, balances, smart settle-up
+js/store.js              data layer (localStorage; swappable at runtime)
+js/cloud.js              Phase 2: login screen + Supabase auth + cloud sync
+js/app.js                UI
+js/config.js             local vs cloud switch + Supabase keys
+supabase/schema.sql      Phase 2 database + security rules
+supabase/functions/send-reminders/index.ts   auto-email function
+supabase/schedule.sql    Phase 2 cron schedule
+tests/engine.test.mjs    money/split/settle-up tests
+```
+
+## Cost
+GitHub Pages, Supabase free tier, and Resend free tier are all $0 at the scale
+of splitting trips with friends.
+
+## Roadmap ideas
+Receipt OCR (auto-read totals), recurring expenses, "simplify debts across all
+groups", payment-app deep links (Venmo/PayPal), CSV export, PWA install.
